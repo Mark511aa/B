@@ -1,0 +1,22 @@
+version: "1.0.0"
+game: "Fortnite"
+description: "External Automation Signatures (Computer Vision based)"
+signatures:
+  - name: "EnemyDetection"
+    method: "OpenCV_Cascade"
+    model_path: "yolov8_model.pt"
+    confidence_threshold: 0.85
+    isEnabled: true
+    description: "Detect enemy head/body for CV tracking"
+  - name: "AutoTrigger"
+    method: "Color_Filter"
+    target_color: "enemy_highlight_red"
+    action: "mouse_click"
+    isEnabled: true
+    description: "Auto fire on color detection"
+  - name: "RecoilCompensation"
+    method: "Scripted_Mouse_Move"
+    pattern_id: "m4_recoil_compensator"
+    offset: 0
+    isEnabled: true
+    description: "External mouse movement to negate recoil"
