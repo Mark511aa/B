@@ -30,26 +30,17 @@ jobs:
         
     - name: Setup iOS SDK
       run: |
-        mkdir -p sdks
-        cd sdks
+        # Use system SDK instead of downloading
+        export SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
+        echo "Using system SDK: $SDKROOT"
+        echo "SDKROOT=$SDKROOT" >> $GITHUB_ENV
         
-        curl -L -o iPhoneOS14.5.sdk.zip "https://github.com/theos/sdks/raw/master/iPhoneOS14.5.sdk.zip"
-        
-        if [ ! -f iPhoneOS14.5.sdk.zip ] || [ ! -s iPhoneOS14.5.sdk.zip ]; then
-          echo "First download failed, trying alternative..."
-          curl -L -o iPhoneOS14.5.sdk.zip "https://archive.org/download/iphoneos14.5.sdk/iPhoneOS14.5.sdk.zip"
+        # Verify SDK exists
+        if [ ! -d "$SDKROOT" ]; then
+          echo "❌ System SDK not found!"
+          exit 1
         fi
-        
-        if [ -f iPhoneOS14.5.sdk.zip ] && [ -s iPhoneOS14.5.sdk.zip ]; then
-          unzip -q iPhoneOS14.5.sdk.zip
-          echo "✅ SDK extracted successfully"
-        else
-          echo "⚠️  SDK download failed, using system SDK"
-          cd ..
-          export SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
-          echo "Using system SDK: $SDKROOT"
-        fi
-        cd ..
+        echo "✅ System SDK found"
         
     - name: Verify SDK Files
       run: |
@@ -57,18 +48,14 @@ jobs:
           echo "✅ SDK directory exists"
           ls -la SDK/
         else
-          echo "⚠️  SDK directory not found, continuing..."
+          echo "⚠️  SDK directory not found, but continuing with system SDK..."
         fi
         
     - name: Build Tweak
       run: |
         export THEOS=$(pwd)/theos
-        if [ -d "sdks/iPhoneOS14.5.sdk" ]; then
-          export SDKROOT=$(pwd)/sdks/iPhoneOS14.5.sdk
-        else
-          export SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
-        fi
-        echo "Using SDKROOT: $SDKROOT"
+        export SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
+        echo "Building with SDKROOT: $SDKROOT"
         make clean
         make package
         
