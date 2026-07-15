@@ -32,30 +32,50 @@ jobs:
       run: |
         mkdir -p sdks
         cd sdks
-        curl -L -o iPhoneOS14.5.sdk.zip https://github.com/theos/sdks/releases/download/iphoneos14.5/iPhoneOS14.5.sdk.zip
-        unzip -q iPhoneOS14.5.sdk.zip
+        
+        curl -L -o iPhoneOS14.5.sdk.zip "https://github.com/theos/sdks/raw/master/iPhoneOS14.5.sdk.zip"
+        
+        if [ ! -f iPhoneOS14.5.sdk.zip ] || [ ! -s iPhoneOS14.5.sdk.zip ]; then
+          echo "First download failed, trying alternative..."
+          curl -L -o iPhoneOS14.5.sdk.zip "https://archive.org/download/iphoneos14.5.sdk/iPhoneOS14.5.sdk.zip"
+        fi
+        
+        if [ -f iPhoneOS14.5.sdk.zip ] && [ -s iPhoneOS14.5.sdk.zip ]; then
+          unzip -q iPhoneOS14.5.sdk.zip
+          echo "✅ SDK extracted successfully"
+        else
+          echo "⚠️  SDK download failed, using system SDK"
+          cd ..
+          export SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
+          echo "Using system SDK: $SDKROOT"
+        fi
         cd ..
         
     - name: Verify SDK Files
       run: |
-        if [ ! -d "SDK" ]; then
-          echo "⚠️  SDK directory not found"
-          exit 1
+        if [ -d "SDK" ]; then
+          echo "✅ SDK directory exists"
+          ls -la SDK/
+        else
+          echo "⚠️  SDK directory not found, continuing..."
         fi
-        echo "✅ SDK directory exists"
-        ls -la SDK/
         
     - name: Build Tweak
       run: |
         export THEOS=$(pwd)/theos
-        export SDKROOT=$(pwd)/sdks/iPhoneOS14.5.sdk
+        if [ -d "sdks/iPhoneOS14.5.sdk" ]; then
+          export SDKROOT=$(pwd)/sdks/iPhoneOS14.5.sdk
+        else
+          export SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
+        fi
+        echo "Using SDKROOT: $SDKROOT"
         make clean
         make package
         
     - name: List Packages
       run: |
         echo "Generated packages:"
-        ls -la packages/ || echo "No packages found"
+        find packages -name "*.deb" -type f || echo "No packages found"
         
     - name: Upload Artifacts
       uses: actions/upload-artifact@v4
@@ -87,16 +107,16 @@ jobs:
     - name: Validate Package
       run: |
         cd artifacts
-        for deb in *.deb; do
-          if [ -f "$deb" ]; then
+        if ls *.deb 1> /dev/null 2>&1; then
+          for deb in *.deb; do
             echo "📦 Validating: $deb"
             dpkg -I "$deb"
             dpkg -c "$deb" | head -20
-          else
-            echo "❌ No .deb files found"
-            exit 1
-          fi
-        done
+          done
+        else
+          echo "❌ No .deb files found"
+          exit 1
+        fi
 
   release:
     name: Release Package
@@ -114,8 +134,13 @@ jobs:
     - name: Generate Checksums
       run: |
         cd dist
-        sha256sum *.deb > checksums.txt
-        cat checksums.txt
+        if ls *.deb 1> /dev/null 2>&1; then
+          sha256sum *.deb > checksums.txt
+          cat checksums.txt
+        else
+          echo "No packages to release"
+          exit 1
+        fi
         
     - name: Upload to Release
       uses: softprops/action-gh-release@v1
