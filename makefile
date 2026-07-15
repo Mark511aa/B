@@ -1,24 +1,12 @@
-# اسم الملف الناتج (المكتبة)
-TARGET = Mods.dylib
+ARCHS = arm64
+TARGET = iphone:14.0:14.0
 
-# المترجم (Compiler)
-CXX = clang++
+include $(THEOS)/makefiles/common.mk
 
-# مسارات المكتبات (يجب أن تتطابق مع مكان وجود ملفاتك)
-CFLAGS = -dynamiclib -fPIC -std=c++17 -arch arm64 -isysroot $(shell xcrun --sdk iphoneos --show-sdk-path)
-FRAMEWORKS = -framework Foundation -framework UIKit
+TWEAK_NAME = metalbiew
+metalbiew_FILES = metalbiew.mm
+metalbiew_FRAMEWORKS = UIKit CoreGraphics
+metalbiew_CFLAGS = -fobjc-arc -std=c++17 -O3 -march=arm64 -mtune=apple-a13
+metalbiew_LDFLAGS = -undefined dynamic_lookup
 
-# الملفات المصدرية
-SOURCES = Mods.mm
-
-# عملية البناء
-all:
-	@echo "🛠 Building $(TARGET)..."
-	$(CXX) $(CFLAGS) $(SOURCES) -o $(TARGET) $(FRAMEWORKS)
-	@echo "✅ Build Complete: $(TARGET)"
-
-# تنظيف الملفات المؤقتة
-clean:
-	rm -f $(TARGET)
-
-.PHONY: all clean
+include $(THEOS_MAKE_PATH)/tweak.mk
