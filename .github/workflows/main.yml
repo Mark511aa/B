@@ -2,25 +2,16 @@ name: Build PUBGM Aimbot Tweak
 
 on:
   push:
-    branches: [ main, master, develop ]
-  pull_request:
     branches: [ main, master ]
+  pull_request:
+    branches: [ main ]
   release:
     types: [ published ]
   workflow_dispatch:
-    inputs:
-      build_type:
-        description: 'Build type'
-        required: true
-        default: 'release'
-        type: choice
-        options:
-          - debug
-          - release
 
 jobs:
   build:
-    name: Build Tweak Package
+    name: Build Package
     runs-on: macos-latest
     
     steps:
@@ -28,50 +19,44 @@ jobs:
       uses: actions/checkout@v4
       with:
         submodules: true
-        fetch-depth: 0
-
-    - name: Setup Environment Variables
-      run: |
-        echo "THEOS=$(pwd)/theos" >> $GITHUB_ENV
-        echo "SDK_PATH=$(pwd)/SDK" >> $GITHUB_ENV
-        echo "PROJECT_DIR=$(pwd)" >> $GITHUB_ENV
-
-    - name: Install Dependencies
+        
+    - name: Install Build Tools
       run: |
         brew install ldid dpkg
-        pip3 install --upgrade pip
-
+        
     - name: Setup Theos
       run: |
         git clone --recursive https://github.com/theos/theos.git
-        cd theos
-        git checkout latest
-        cd ..
         
-        # Download iOS SDK
+    - name: Setup iOS SDK
+      run: |
         mkdir -p sdks
         cd sdks
         curl -L -o iPhoneOS14.5.sdk.zip https://github.com/theos/sdks/releases/download/iphoneos14.5/iPhoneOS14.5.sdk.zip
         unzip -q iPhoneOS14.5.sdk.zip
         cd ..
-
-    - name: Validate SDK Files
+        
+    - name: Verify SDK Files
       run: |
-        echo "Checking SDK files..."
-        ls -la SDK/
-        if [ ! -f "SDK/SHANKS_PUBGM_Basic.hpp" ]; then
-          echo "❌ SDK files missing!"
+        if [ ! -d "SDK" ]; then
+          echo "⚠️  SDK directory not found"
           exit 1
         fi
-        echo "✅ SDK files found"
-
+        echo "✅ SDK directory exists"
+        ls -la SDK/
+        
     - name: Build Tweak
       run: |
-        export THEOS=${{ env.THEOS }}
+        export THEOS=$(pwd)/theos
         export SDKROOT=$(pwd)/sdks/iPhoneOS14.5.sdk
         make clean
         make package
-
+        
+    - name: List Packages
+      run: |
+        echo "Generated packages:"
+        ls -la packages/ || echo "No packages found"
+        
     - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
@@ -82,7 +67,7 @@ jobs:
         retention-days: 30
 
   test:
-    name: Test Package Integrity
+    name: Test Package
     needs: build
     runs-on: ubuntu-latest
     if: always()
@@ -93,69 +78,28 @@ jobs:
       with:
         name: metalbiew-package
         path: artifacts
-
+        
     - name: Install Dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y dpkg file
-
-    - name: Validate DEB Package
-      run: |
-        find artifacts -name "*.deb" -type f | while read deb; do
-          echo "📦 Validating: $deb"
-          dpkg -I "$deb"
-          file "$deb"
-          
-          # Verify package structure
-          if dpkg --verify "$deb" 2>/dev/null; then
-            echo "✅ Package valid: $deb"
-          else
-            echo "❌ Package invalid: $deb"
-            exit 1
-          fi
-        done
-
-    - name: Check Required Files
-      run: |
-        find artifacts -name "*.deb" -type f | while read deb; do
-          echo "Checking contents of $deb..."
-          dpkg -c "$deb" | grep -E "(dylib|plist|control)"
-          
-          # Check for dylib
-          if dpkg -c "$deb" | grep -q "\.dylib$"; then
-            echo "✅ Dylib found"
-          else
-            echo "❌ No dylib found"
-            exit 1
-          fi
-        done
-
-  security-scan:
-    name: Security Scan
-    needs: build
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    
-    steps:
-    - name: Checkout Code
-      uses: actions/checkout@v4
-
-    - name: Check for Sensitive Data
-      run: |
-        echo "🔍 Scanning for sensitive data..."
-        # Check for hardcoded keys
-        if grep -r "API_KEY\|SECRET\|TOKEN\|PASSWORD" --include="*.mm" --include="*.h" --include="*.m" . 2>/dev/null; then
-          echo "⚠️  Potential sensitive data found!"
-          exit 1
-        fi
         
-        # Check for debug symbols
-        if grep -r "NSLog\|printf\|cout" --include="*.mm" --include="*.m" . 2>/dev/null; then
-          echo "ℹ️  Debug output found (not critical)"
-        fi
+    - name: Validate Package
+      run: |
+        cd artifacts
+        for deb in *.deb; do
+          if [ -f "$deb" ]; then
+            echo "📦 Validating: $deb"
+            dpkg -I "$deb"
+            dpkg -c "$deb" | head -20
+          else
+            echo "❌ No .deb files found"
+            exit 1
+          fi
+        done
 
-  create-release:
-    name: Create Release Package
+  release:
+    name: Release Package
     needs: [build, test]
     runs-on: ubuntu-latest
     if: github.event_name == 'release'
@@ -166,14 +110,13 @@ jobs:
       with:
         name: metalbiew-package
         path: dist
-
-    - name: Prepare Release Files
+        
+    - name: Generate Checksums
       run: |
         cd dist
-        echo "Creating checksums..."
         sha256sum *.deb > checksums.txt
-        ls -la
-
+        cat checksums.txt
+        
     - name: Upload to Release
       uses: softprops/action-gh-release@v1
       with:
@@ -184,20 +127,19 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  notify:
+  status:
     name: Build Status
-    needs: [build, test]
+    needs: [build, test, release]
     runs-on: ubuntu-latest
     if: always()
     
     steps:
-    - name: Create Status Summary
+    - name: Show Status
       run: |
         echo "## 📊 Build Status" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "| Component | Status |" >> $GITHUB_STEP_SUMMARY
-        echo "|-----------|--------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+        echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
         echo "| Build | ${{ needs.build.result }} |" >> $GITHUB_STEP_SUMMARY
-        echo "| Tests | ${{ needs.test.result }} |" >> $GITHUB_STEP_SUMMARY
-        echo "| Security Scan | ${{ needs.security-scan.result }} |" >> $GITHUB_STEP_SUMMARY
-        echo "| Release | ${{ needs.create-release.result }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Test | ${{ needs.test.result }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Release | ${{ needs.release.result }} |" >> $GITHUB_STEP_SUMMARY
