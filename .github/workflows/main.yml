@@ -1,22 +1,283 @@
-version: "1.0.0"
-game: "Fortnite"
-description: "External Automation Signatures (Computer Vision based)"
-signatures:
-  - name: "EnemyDetection"
-    method: "OpenCV_Cascade"
-    model_path: "yolov8_model.pt"
-    confidence_threshold: 0.85
-    isEnabled: true
-    description: "Detect enemy head/body for CV tracking"
-  - name: "AutoTrigger"
-    method: "Color_Filter"
-    target_color: "enemy_highlight_red"
-    action: "mouse_click"
-    isEnabled: true
-    description: "Auto fire on color detection"
-  - name: "RecoilCompensation"
-    method: "Scripted_Mouse_Move"
-    pattern_id: "m4_recoil_compensator"
-    offset: 0
-    isEnabled: true
-    description: "External mouse movement to negate recoil"
+name: Build PUBGM Aimbot Tweak
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+  release:
+    types: [ published ]
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build type'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+          - debug
+          - release
+
+env:
+  PROJECT_NAME: metalbiew
+  THEOS_VERSION: latest
+  IOS_VERSION: 14.0
+  ARCHS: arm64
+
+jobs:
+  build:
+    name: Build Tweak Package
+    runs-on: macos-latest
+    
+    strategy:
+      matrix:
+        ios-version: [14.0, 15.0, 16.0]
+    
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        submodules: true
+        fetch-depth: 0
+
+    - name: Setup Environment Variables
+      run: |
+        echo "THEOS=$(pwd)/theos" >> $GITHUB_ENV
+        echo "SDK_PATH=$(pwd)/sdk" >> $GITHUB_ENV
+        echo "PROJECT_DIR=$(pwd)" >> $GITHUB_ENV
+
+    - name: Install Dependencies
+      run: |
+        brew install ldid dpkg
+        brew install --cask xquartz
+        pip3 install --upgrade pip
+        pip3 install plistlib
+
+    - name: Setup Theos
+      run: |
+        git clone --recursive https://github.com/theos/theos.git
+        cd theos
+        git checkout latest
+        cd ..
+        
+        # Download iOS SDK
+        mkdir -p sdks
+        cd sdks
+        wget https://github.com/theos/sdks/releases/download/iphoneos14.5/iPhoneOS14.5.sdk.zip
+        unzip iPhoneOS14.5.sdk.zip
+        cd ..
+
+    - name: Validate SDK Files
+      run: |
+        echo "Checking SDK files..."
+        ls -la SDK/
+        if [ ! -f "SDK/SHANKS_PUBGM_Basic.hpp" ]; then
+          echo "❌ SDK files missing!"
+          exit 1
+        fi
+        echo "✅ SDK files found"
+
+    - name: Build Tweak (Debug)
+      if: github.event.inputs.build_type == 'debug' || github.event_name == 'push'
+      run: |
+        export THEOS=${{ env.THEOS }}
+        export SDKROOT=$(pwd)/sdks/iPhoneOS14.5.sdk
+        make clean
+        make package DEBUG=1
+      continue-on-error: false
+
+    - name: Build Tweak (Release)
+      if: github.event.inputs.build_type == 'release' || github.event_name == 'release'
+      run: |
+        export THEOS=${{ env.THEOS }}
+        export SDKROOT=$(pwd)/sdks/iPhoneOS14.5.sdk
+        make clean
+        make package FINALPACKAGE=1
+      continue-on-error: false
+
+    - name: Run Linter
+      run: |
+        echo "Running code checks..."
+        # Check for common issues
+        if grep -r "NSLog" --include="*.mm" --include="*.m" .; then
+          echo "⚠️  Warning: NSLog found in code"
+        fi
+        
+        # Check if all SDK includes are present
+        grep -r "#include.*SDK" --include="*.mm" --include="*.h" .
+
+    - name: Upload Artifacts (Debug)
+      if: github.event.inputs.build_type == 'debug' || github.event_name == 'push'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.PROJECT_NAME }}-debug-${{ matrix.ios-version }}
+        path: |
+          packages/*.deb
+          packages/*.zip
+          layout/
+        retention-days: 30
+        compression-level: 9
+
+    - name: Upload Artifacts (Release)
+      if: github.event.inputs.build_type == 'release' || github.event_name == 'release'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.PROJECT_NAME }}-release-${{ matrix.ios-version }}
+        path: |
+          packages/*.deb
+          packages/*.zip
+          layout/
+        retention-days: 90
+        compression-level: 9
+
+    - name: Create Release Package
+      if: github.event_name == 'release'
+      run: |
+        mkdir -p dist
+        cp packages/*.deb dist/
+        cd dist
+        echo "Creating checksums..."
+        sha256sum *.deb > checksums.txt
+        cd ..
+
+    - name: Upload to Release
+      if: github.event_name == 'release'
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          dist/*.deb
+          dist/checksums.txt
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  test:
+    name: Test Package Integrity
+    needs: build
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+    - name: Download Artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+
+    - name: Validate DEB Package
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y dpkg file
+        
+        # Find and validate all .deb files
+        find artifacts -name "*.deb" -type f | while read deb; do
+          echo "📦 Validating: $deb"
+          dpkg -I "$deb"
+          file "$deb"
+          
+          # Extract control info
+          dpkg -f "$deb" Package Name Version Architecture
+          
+          # Verify package structure
+          if dpkg --verify "$deb" 2>/dev/null; then
+            echo "✅ Package valid: $deb"
+          else
+            echo "❌ Package invalid: $deb"
+            exit 1
+          fi
+        done
+
+    - name: Check Required Files
+      run: |
+        find artifacts -name "*.deb" -type f | while read deb; do
+          echo "Checking contents of $deb..."
+          dpkg -c "$deb" | grep -E "(dylib|plist|control)"
+          
+          # Check for dylib
+          if dpkg -c "$deb" | grep -q "\.dylib$"; then
+            echo "✅ Dylib found"
+          else
+            echo "❌ No dylib found"
+            exit 1
+          fi
+          
+          # Check for plist
+          if dpkg -c "$deb" | grep -q "\.plist$"; then
+            echo "✅ Plist found"
+          else
+            echo "⚠️  No plist found (optional)"
+          fi
+        done
+
+  security-scan:
+    name: Security Scan
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Run Security Scan
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+        severity: 'CRITICAL,HIGH'
+
+    - name: Upload Security Results
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: 'trivy-results.sarif'
+
+    - name: Check for Sensitive Data
+      run: |
+        echo "🔍 Scanning for sensitive data..."
+        # Check for hardcoded keys
+        if grep -r "API_KEY\|SECRET\|TOKEN" --include="*.mm" --include="*.h" --include="*.m" .; then
+          echo "⚠️  Potential sensitive data found!"
+          exit 1
+        fi
+        
+        # Check for debug symbols
+        if grep -r "DEBUG\|NSLog" --include="*.mm" --include="*.m" .; then
+          echo "⚠️  Debug symbols or NSLog found"
+        fi
+
+  notify:
+    name: Notify Build Status
+    needs: [build, test]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+    - name: Check Build Status
+      id: status
+      run: |
+        if [ "${{ needs.build.result }}" == "success" ] && [ "${{ needs.test.result }}" == "success" ]; then
+          echo "status=✅ Build successful!" >> $GITHUB_OUTPUT
+        else
+          echo "status=❌ Build failed!" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Create Status Badge
+      run: |
+        echo "## 📊 Build Status" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Component | Status |" >> $GITHUB_STEP_SUMMARY
+        echo "|-----------|--------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Build | ${{ steps.status.outputs.status }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Tests | ${{ needs.test.result }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Security Scan | ${{ needs.security-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+
+    - name: Discord Notification (Optional)
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      uses: sarisia/actions-status-discord@v1
+      with:
+        webhook: ${{ secrets.DISCORD_WEBHOOK }}
+        status: ${{ steps.status.outputs.status }}
+        title: "PUBGM Aimbot Build"
+        description: "Build triggered by ${{ github.actor }}"
+        color: 0x00ff00
